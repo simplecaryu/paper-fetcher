@@ -3,14 +3,21 @@
 fetch_papers.py — Generic academic paper fetcher.
 
 Sources (in priority order):
-  1. arXiv API      — physics preprints; full abstracts always present
-  2. RSS feeds      — Nature/IOP journals with working feeds
-  3. CrossRef API   — APS journals (Cloudflare-blocked RSS); metadata only (~15% abstracts)
-  4. scholarly      — optional topic sweep via Google Scholar (--scholarly flag)
+  1. arXiv API       — physics preprints; full abstracts always present
+  2. RSS feeds       — Nature/IOP journals with working feeds
+  3. CrossRef API    — APS journals (Cloudflare-blocked RSS); metadata only (~15% abstracts)
+  4. scholarly       — optional topic sweep via Google Scholar (--scholarly flag)
+  5. tracked authors — optional per-author fetch via Semantic Scholar (--tracked-authors flag)
+
+Filtering:
+  - arXiv categories marked "filtered": true in the profile are keyword-filtered at script level
+    (typically broad CS categories like cs.LG). Physics-specific categories pass through unfiltered.
+  - All journal sources (RSS, CrossRef) and tracked-author papers bypass the keyword filter.
 
 Usage:
   python fetch_papers.py --profile profiles/my-profile.json --config config.local.json
   python fetch_papers.py --profile profiles/my-profile.json --config config.local.json --scholarly
+  python fetch_papers.py --profile profiles/my-profile.json --config config.local.json --tracked-authors
 """
 
 import argparse
@@ -154,10 +161,15 @@ def fetch_arxiv(profile, cutoff_date, seen):
     """
     Fetch recent submissions from arXiv for the categories in the profile.
     Returns list of paper dicts. Full abstracts always present.
+    Each paper is tagged with "filtered": True if its primary category has
+    "filtered": true in the profile (used later by apply_keyword_filter).
     """
     categories = profile.get("arxiv_categories", [])
     if not categories:
         return []
+
+    # Build a set of category IDs that are keyword-filtered
+    filtered_cats = {c["id"] for c in categories if c.get("filtered")}
 
     cats_query = "+OR+".join(f"cat:{c['id']}" for c in categories)
     from_date = cutoff_date.strftime("%Y%m%d0000")
@@ -190,7 +202,6 @@ def fetch_arxiv(profile, cutoff_date, seen):
             continue
 
         doi = entry.get("arxiv_doi") or None
-        # Also check doi: key to avoid duplicating CrossRef/RSS entries
         doi_key = f"doi:{doi}" if doi else None
 
         pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
@@ -198,7 +209,6 @@ def fetch_arxiv(profile, cutoff_date, seen):
         abstract = entry.get("summary", "")
         abstract = re.sub(r"\s+", " ", abstract).strip()
 
-        # Primary category (first tag)
         tags = getattr(entry, "tags", [])
         primary_cat = tags[0].term if tags else ""
         all_cats = [t.term for t in tags]
@@ -207,7 +217,8 @@ def fetch_arxiv(profile, cutoff_date, seen):
             "key": key,
             "arxiv_id": arxiv_id,
             "doi": doi,
-            "_doi_key": doi_key,   # used for cross-source dedup; stripped before output
+            "_doi_key": doi_key,
+            "_needs_filter": primary_cat in filtered_cats,  # internal flag
             "title": entry.get("title", "").strip().replace("\n", " "),
             "abstract": abstract,
             "abstract_source": "arxiv",
@@ -377,7 +388,7 @@ def fetch_scholarly(profile, cutoff_year, seen):
         return []
 
     all_papers = []
-    seen_titles = set()  # within-scholarly dedup by title
+    seen_titles = set()
 
     for query in queries:
         print(f"  scholarly: searching '{query}'...")
@@ -400,7 +411,6 @@ def fetch_scholarly(profile, cutoff_year, seen):
                     continue
                 seen_titles.add(title.lower())
 
-                # Build a dedup key from title hash (no DOI usually available)
                 key = f"scholarly:{hashlib.md5(title.lower().encode()).hexdigest()[:12]}"
                 if key in seen:
                     continue
@@ -428,7 +438,159 @@ def fetch_scholarly(profile, cutoff_year, seen):
                 count += 1
         except Exception as e:
             print(f"  WARNING: scholarly search failed for '{query}': {e}", file=sys.stderr)
-        time.sleep(1)  # polite rate limiting
+        time.sleep(1)
+
+    return all_papers
+
+
+# ---------------------------------------------------------------------------
+# Source 5: Tracked authors via Semantic Scholar + arXiv (optional)
+# ---------------------------------------------------------------------------
+
+def fetch_tracked_authors(profile, cutoff_date, seen):
+    """
+    Fetch recent papers from tracked authors via Semantic Scholar API,
+    supplemented by arXiv author search for recent preprints.
+
+    Profile entry format:
+      "tracked_authors": [
+        {
+          "name": "Firstname Lastname",
+          "semanticscholar_id": "12345678",
+          "arxiv_name": "Lastname_F"   (optional, for arXiv search)
+        }
+      ]
+
+    Papers from tracked authors bypass the keyword filter.
+    """
+    authors = profile.get("tracked_authors", [])
+    if not authors:
+        return []
+
+    all_papers = []
+    cutoff_str = cutoff_date.strftime("%Y-%m-%d")
+
+    for author in authors:
+        author_name = author.get("name", "Unknown")
+        s2_id = author.get("semanticscholar_id")
+        arxiv_name = author.get("arxiv_name")
+        author_papers = []
+
+        # ── Semantic Scholar: get author's recent papers ─────────────────
+        if s2_id:
+            try:
+                r = requests.get(
+                    f"https://api.semanticscholar.org/graph/v1/author/{s2_id}/papers",
+                    params={
+                        "fields": "title,abstract,year,externalIds,venue,publicationDate",
+                        "limit": 20,
+                    },
+                    timeout=15,
+                )
+                if r.status_code == 200:
+                    for item in r.json().get("data", []):
+                        pub_date = item.get("publicationDate") or ""
+                        # Filter by date if available; otherwise include if year matches
+                        if pub_date:
+                            if pub_date < cutoff_str:
+                                continue
+                        else:
+                            year = item.get("year")
+                            if year and year < cutoff_date.year:
+                                continue
+
+                        title = (item.get("title") or "").strip()
+                        if not title:
+                            continue
+
+                        ext_ids = item.get("externalIds") or {}
+                        doi = ext_ids.get("DOI")
+                        arxiv_id = ext_ids.get("ArXiv")
+
+                        key = f"doi:{doi}" if doi else (
+                            f"arxiv:{arxiv_id}" if arxiv_id else
+                            f"s2:{hashlib.md5(title.lower().encode()).hexdigest()[:12]}"
+                        )
+                        if key in seen:
+                            continue
+
+                        abstract = item.get("abstract") or ""
+                        author_papers.append({
+                            "key": key,
+                            "arxiv_id": arxiv_id,
+                            "doi": doi,
+                            "_doi_key": f"doi:{doi}" if doi else None,
+                            "title": title,
+                            "abstract": abstract,
+                            "abstract_source": "semanticscholar" if abstract else "",
+                            "url": f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else
+                                   (f"https://doi.org/{doi}" if doi else ""),
+                            "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}" if arxiv_id else None,
+                            "journal": item.get("venue") or "arXiv preprint",
+                            "date": pub_date or (str(item.get("year")) if item.get("year") else None),
+                            "authors": [],  # not fetched at this endpoint
+                            "is_oa": bool(arxiv_id),
+                            "source": "tracked_author",
+                            "tracked_author_name": author_name,
+                        })
+                elif r.status_code == 404:
+                    print(f"  WARNING: Semantic Scholar author not found: {author_name} (id={s2_id})", file=sys.stderr)
+                else:
+                    print(f"  WARNING: Semantic Scholar returned {r.status_code} for {author_name}", file=sys.stderr)
+            except Exception as e:
+                print(f"  WARNING: S2 fetch failed for {author_name}: {e}", file=sys.stderr)
+            time.sleep(0.5)
+
+        # ── arXiv author search: catch recent preprints ───────────────────
+        if arxiv_name:
+            try:
+                from_date = cutoff_date.strftime("%Y%m%d0000")
+                to_date = datetime.now(timezone.utc).strftime("%Y%m%d2359")
+                url = (
+                    f"https://export.arxiv.org/api/query"
+                    f"?search_query=au:{arxiv_name}+AND+submittedDate:[{from_date}+TO+{to_date}]"
+                    f"&start=0&max_results=20&sortBy=submittedDate&sortOrder=descending"
+                )
+                feed = feedparser.parse(url)
+                for entry in feed.entries:
+                    raw_id = entry.id.split("/abs/")[-1]
+                    arxiv_id = re.sub(r"v\d+$", "", raw_id)
+                    key = f"arxiv:{arxiv_id}"
+                    if key in seen:
+                        continue
+                    # Skip if already fetched from S2 for this author
+                    if any(p["key"] == key for p in author_papers):
+                        continue
+
+                    doi = entry.get("arxiv_doi") or None
+                    abstract = re.sub(r"\s+", " ", entry.get("summary", "")).strip()
+                    tags = getattr(entry, "tags", [])
+                    primary_cat = tags[0].term if tags else ""
+
+                    author_papers.append({
+                        "key": key,
+                        "arxiv_id": arxiv_id,
+                        "doi": doi,
+                        "_doi_key": f"doi:{doi}" if doi else None,
+                        "title": entry.get("title", "").strip().replace("\n", " "),
+                        "abstract": abstract,
+                        "abstract_source": "arxiv",
+                        "url": f"https://arxiv.org/abs/{arxiv_id}",
+                        "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}",
+                        "journal": entry.get("arxiv_journal_ref") or "arXiv preprint",
+                        "date": parse_date(entry),
+                        "authors": [a.name for a in getattr(entry, "authors", [])],
+                        "is_oa": True,
+                        "arxiv_categories": [t.term for t in tags],
+                        "primary_category": primary_cat,
+                        "source": "tracked_author",
+                        "tracked_author_name": author_name,
+                    })
+            except Exception as e:
+                print(f"  WARNING: arXiv author search failed for {author_name}: {e}", file=sys.stderr)
+
+        print(f"  {author_name}: {len(author_papers)} new papers")
+        all_papers.extend(author_papers)
 
     return all_papers
 
@@ -493,7 +655,6 @@ def dedup_by_doi(all_papers):
         doi = (p.get("doi") or "").lower()
         if doi and doi in doi_to_arxiv:
             skipped_dois.add(doi)
-            # arXiv version already in kept; skip this duplicate
             continue
         kept.append(p)
 
@@ -503,10 +664,57 @@ def dedup_by_doi(all_papers):
     return kept
 
 
+# ---------------------------------------------------------------------------
+# Two-group keyword filter
+# ---------------------------------------------------------------------------
+
+def apply_keyword_filter(all_papers, profile, seen, today_str):
+    """
+    Apply keyword filtering ONLY to arXiv papers whose primary_category has
+    "filtered": true in the profile (Group 2 — e.g., cs.LG).
+
+    All journal sources (RSS, CrossRef), tracked-author papers, scholarly papers,
+    and physics arXiv categories (Group 1) pass through unconditionally.
+
+    Group 2 papers that fail the keyword check are:
+      - Added to `seen` so they won't re-appear next week
+      - Excluded from the output
+
+    Returns (kept_papers, n_discarded).
+    """
+    kf = profile.get("keyword_filter", {})
+    keywords = [k.lower() for k in kf.get("keywords", [])]
+    if not keywords:
+        return all_papers, 0  # no filter configured
+
+    kept = []
+    n_discarded = 0
+
+    for p in all_papers:
+        # Only filter arXiv papers tagged as needing filter (Group 2)
+        if not p.get("_needs_filter"):
+            kept.append(p)
+            continue
+
+        title_lower = p.get("title", "").lower()
+        if any(kw in title_lower for kw in keywords):
+            kept.append(p)
+        else:
+            # Mark as seen but exclude from output
+            seen[p["key"]] = p.get("date") or today_str
+            doi_key = p.get("_doi_key")
+            if doi_key and doi_key != p["key"]:
+                seen[doi_key] = seen[p["key"]]
+            n_discarded += 1
+
+    return kept, n_discarded
+
+
 def strip_internal_fields(papers):
-    """Remove fields prefixed with _ that are only used for internal dedup."""
+    """Remove internal-only fields before saving output."""
     for p in papers:
         p.pop("_doi_key", None)
+        p.pop("_needs_filter", None)
     return papers
 
 
@@ -515,11 +723,12 @@ def strip_internal_fields(papers):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Fetch papers from arXiv, RSS, and CrossRef.")
+    parser = argparse.ArgumentParser(description="Fetch papers from arXiv, RSS, CrossRef, and more.")
     parser.add_argument("--profile", required=True, help="Path to profile JSON")
     parser.add_argument("--config", required=True, help="Path to config.local.json (email, base_dir)")
     parser.add_argument("--days", type=int, default=None, help="Lookback window override (days)")
     parser.add_argument("--scholarly", action="store_true", help="Enable Google Scholar topic sweep")
+    parser.add_argument("--tracked-authors", action="store_true", help="Enable tracked-author fetch via Semantic Scholar")
     parser.add_argument("--no-enrich", action="store_true", help="Skip Semantic Scholar abstract enrichment")
     args = parser.parse_args()
 
@@ -538,6 +747,7 @@ def main():
     seen = load_seen(seen_path)
 
     now = datetime.now(timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
     cutoff_date = now - timedelta(days=lookback_days)
 
     all_papers = []
@@ -546,7 +756,11 @@ def main():
     # ── Source 1: arXiv API ──────────────────────────────────────────────
     cats = profile.get("arxiv_categories", [])
     if cats:
+        filtered_cat_ids = [c["id"] for c in cats if c.get("filtered")]
+        unfiltered_cat_ids = [c["id"] for c in cats if not c.get("filtered")]
         print(f"Fetching arXiv ({len(cats)} categories, last {lookback_days} days)...")
+        if filtered_cat_ids:
+            print(f"  Keyword-filtered categories: {', '.join(filtered_cat_ids)}")
         papers = fetch_arxiv(profile, cutoff_date, seen)
         source_counts["arXiv"] = len(papers)
         all_papers.extend(papers)
@@ -579,15 +793,29 @@ def main():
     # ── Source 4: scholarly (optional) ──────────────────────────────────
     if args.scholarly:
         print("Fetching via scholarly (Google Scholar)...")
-        cutoff_year = cutoff_date.year
-        papers = fetch_scholarly(profile, cutoff_year, seen)
+        papers = fetch_scholarly(profile, cutoff_date.year, seen)
         source_counts["scholarly"] = len(papers)
         all_papers.extend(papers)
         print(f"  scholarly: {len(papers)} new papers")
 
+    # ── Source 5: tracked authors (optional) ─────────────────────────────
+    if args.tracked_authors:
+        tracked = profile.get("tracked_authors", [])
+        if tracked:
+            print(f"Fetching tracked authors ({len(tracked)} researchers)...")
+            papers = fetch_tracked_authors(profile, cutoff_date, seen)
+            source_counts["tracked_authors"] = len(papers)
+            all_papers.extend(papers)
+            print(f"  Tracked authors total: {len(papers)} new papers")
+
     # ── Cross-source DOI dedup ───────────────────────────────────────────
-    if len(all_papers) > 0:
+    if all_papers:
         all_papers = dedup_by_doi(all_papers)
+
+    # ── Two-group keyword filter ─────────────────────────────────────────
+    all_papers, n_discarded = apply_keyword_filter(all_papers, profile, seen, today_str)
+    if n_discarded:
+        print(f"  Keyword filter: discarded {n_discarded} papers from filtered categories")
 
     # ── Abstract enrichment ──────────────────────────────────────────────
     if not args.no_enrich:
@@ -595,10 +823,9 @@ def main():
 
     n_with_abstract = sum(1 for p in all_papers if p.get("abstract"))
 
-    # ── Mark all as seen ────────────────────────────────────────────────
+    # ── Mark all kept papers as seen ────────────────────────────────────
     for p in all_papers:
-        seen[p["key"]] = p.get("date") or now.strftime("%Y-%m-%d")
-        # Also mark doi key as seen to prevent future duplicates
+        seen[p["key"]] = p.get("date") or today_str
         doi_key = p.get("_doi_key")
         if doi_key and doi_key != p["key"]:
             seen[doi_key] = seen[p["key"]]
@@ -608,13 +835,12 @@ def main():
     # ── Strip internal fields and save ──────────────────────────────────
     strip_internal_fields(all_papers)
 
-    today = now.strftime("%Y-%m-%d")
-    output_path = data_dir / f"papers_{today}.json"
+    output_path = data_dir / f"papers_{today_str}.json"
     with open(output_path, "w") as f:
         json.dump(all_papers, f, indent=2, ensure_ascii=False)
 
     total_sources = sum(1 for v in source_counts.values() if v > 0)
-    print(f"\nFetched {len(all_papers)} new papers from {total_sources} sources")
+    print(f"\nFetched {len(all_papers)} papers ({n_discarded} filtered out) from {total_sources} sources")
     print(f"Abstracts available: {n_with_abstract}/{len(all_papers)}")
     print(f"Saved to: {output_path}")
 

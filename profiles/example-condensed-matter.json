@@ -15,7 +15,7 @@
     {"id": "cond-mat.mes-hall", "name": "Mesoscale & Nanoscale Physics (topology)"},
     {"id": "cond-mat.mtrl-sci", "name": "Materials Science (computational)"},
     {"id": "cond-mat.dis-nn",   "name": "Disordered Systems & Neural Networks"},
-    {"id": "cs.LG",             "name": "Machine Learning"}
+    {"id": "cs.LG",             "name": "Machine Learning", "filtered": true}
   ],
   "scholarly_queries": [
     "machine learning topological insulator",
@@ -23,6 +23,26 @@
     "deep learning strongly correlated electrons",
     "graph neural network materials discovery"
   ],
+  "tracked_authors": [
+    {
+      "name": "Firstname Lastname",
+      "semanticscholar_id": "123456789",
+      "arxiv_name": "Lastname_F"
+    }
+  ],
+  "keyword_filter": {
+    "keywords": [
+      "magnetic", "magnetism", "magnon", "spin", "spintronics",
+      "topological", "topology", "Berry", "Chern", "Weyl",
+      "Mott", "Hubbard", "Kondo", "correlated", "heavy fermion",
+      "superconductor", "superconductivity",
+      "interatomic potential", "force field", "molecular dynamics",
+      "density functional", "DFT", "DMFT",
+      "crystal structure", "materials discovery", "materials science",
+      "band structure", "phonon", "condensed matter", "solid state",
+      "fermi", "lattice"
+    ]
+  },
   "curation_topics": {
     "keep": [
       "AI/ML methods applied to condensed matter or materials science",
