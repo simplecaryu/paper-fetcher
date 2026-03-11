@@ -1,0 +1,3 @@
+feedparser
+requests
+scholarly        # optional, only needed for --scholarly flag

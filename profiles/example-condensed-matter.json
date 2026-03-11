@@ -1,0 +1,46 @@
+{
+  "name": "condensed_matter",
+  "display_name": "AI in Condensed Matter Physics",
+  "lookback_days": 7,
+  "journals": [
+    {"name": "npj Computational Materials",  "url": "https://www.nature.com/npjcompumats/rss",         "oa": true},
+    {"name": "Nature Computational Science", "url": "https://www.nature.com/natcomputsci/rss",         "oa": false},
+    {"name": "MLST",                         "url": "https://iopscience.iop.org/journal/rss/2632-2153","oa": true},
+    {"name": "Physical Review Materials",    "crossref_issn": "2475-9953", "oa": false},
+    {"name": "Physical Review B",            "crossref_issn": "2469-9950", "oa": false},
+    {"name": "PRX Intelligence",             "crossref_issn": "2767-1739", "oa": true}
+  ],
+  "arxiv_categories": [
+    {"id": "cond-mat.str-el",   "name": "Strongly Correlated Electrons"},
+    {"id": "cond-mat.mes-hall", "name": "Mesoscale & Nanoscale Physics (topology)"},
+    {"id": "cond-mat.mtrl-sci", "name": "Materials Science (computational)"},
+    {"id": "cond-mat.dis-nn",   "name": "Disordered Systems & Neural Networks"},
+    {"id": "cs.LG",             "name": "Machine Learning"}
+  ],
+  "scholarly_queries": [
+    "machine learning topological insulator",
+    "neural network magnetic phase diagram",
+    "deep learning strongly correlated electrons",
+    "graph neural network materials discovery"
+  ],
+  "curation_topics": {
+    "keep": [
+      "AI/ML methods applied to condensed matter or materials science",
+      "Magnetism, magnetic ordering, spintronics, spin dynamics",
+      "Strongly correlated electrons (Mott, Hubbard, heavy fermions, Kondo)",
+      "Band topology, topological insulators/semimetals/magnets, Berry phase",
+      "Computational materials science (DFT, DMFT, ML interatomic potentials)",
+      "Crystal structure prediction or materials discovery via ML"
+    ],
+    "discard": [
+      "Pure quantum computing / quantum information (unless tied to materials)",
+      "Bioinformatics, medical imaging, NLP, computer vision",
+      "Classical engineering materials (polymers, composites) with no electronic structure angle"
+    ],
+    "star_3": "Direct ML/AI application to magnetism, topology, or correlated systems; new physics discovered via ML",
+    "star_2": "General ML for materials/condensed matter; new computational methods applicable to these topics",
+    "star_1": "Adjacent or tangentially relevant topics",
+    "include_threshold": "star_2",
+    "max_papers": null
+  }
+}

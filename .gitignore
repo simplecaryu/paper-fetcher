@@ -1,0 +1,9 @@
+*.local.json
+config.json
+.env
+__pycache__/
+*.pyc
+.venv/
+data/
+curations/
+pdfs/
