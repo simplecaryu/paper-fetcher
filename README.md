@@ -10,6 +10,7 @@ A generic academic paper fetcher for weekly curation workflows. Fetches new pape
 | Nature/IOP RSS | npj CM, NatCompSci, MLST | ~60% | None | Primary: those journals |
 | CrossRef | APS journals (via ISSN) | ~15% | None | Fallback for blocked journals |
 | scholarly | Any journal, topic-based | ~80% | Minimal (weekly) | Optional: topic sweep |
+| tracked authors | Semantic Scholar + arXiv | ~90% | None | Optional: follow specific researchers |
 
 APS RSS feeds are Cloudflare-blocked at the IP level — CrossRef is used as a fallback for Physical Review B, Physical Review Materials, and PRX Intelligence.
 
@@ -75,6 +76,41 @@ Key fields:
 - Journals with `"crossref_issn"` → fetched via CrossRef API
 - `arxiv_categories` → fetched via arXiv API (always full abstracts)
 
+### Tracked authors
+
+To follow specific researchers (like Google Scholar "Follow"), add a `tracked_authors` array to your profile:
+
+```json
+"tracked_authors": [
+  {
+    "name": "Firstname Lastname",
+    "semanticscholar_id": "12345678",
+    "arxiv_name": "Lastname_F"
+  }
+]
+```
+
+- `semanticscholar_id`: Find once via `https://api.semanticscholar.org/graph/v1/author/search?query=Name&fields=name,authorId,paperCount,hIndex`
+- `arxiv_name`: Used for supplemental arXiv author search (`au:Lastname_F`) to catch preprints not yet in Semantic Scholar
+- Papers from tracked authors **bypass keyword filtering** — they always appear in the output
+- Enable with `--tracked-authors` flag (off by default to avoid unnecessary API requests)
+
+### Two-group keyword filter
+
+For broad/noisy arXiv categories (e.g., cs.LG with 500+ papers/week), add `"filtered": true` to the category and define `keyword_filter.keywords` in the profile. Papers from filtered categories that don't contain any keyword in their title are discarded and added to `seen` (won't re-appear):
+
+```json
+"arxiv_categories": [
+  {"id": "cond-mat.str-el", "name": "Strongly Correlated Electrons"},
+  {"id": "cs.LG", "name": "Machine Learning", "filtered": true}
+],
+"keyword_filter": {
+  "keywords": ["magnetic", "topological", "DFT", "correlated", "spin", "phonon"]
+}
+```
+
+Journals (RSS + CrossRef) and physics arXiv categories are **never filtered** — only categories with `"filtered": true`.
+
 ## Usage
 
 ```bash
@@ -88,6 +124,12 @@ Key fields:
   --profile /path/to/profiles/my-profile.json \
   --config /path/to/config.local.json \
   --scholarly
+
+# With tracked-author fetch (Semantic Scholar + arXiv author search)
+.venv/bin/python fetch_papers.py \
+  --profile /path/to/profiles/my-profile.json \
+  --config /path/to/config.local.json \
+  --tracked-authors
 
 # Override lookback window
 .venv/bin/python fetch_papers.py \
@@ -150,4 +192,6 @@ Each entry in `papers_YYYY-MM-DD.json`:
 }
 ```
 
-The `source` field is one of: `"arxiv"`, `"rss"`, `"crossref"`, `"scholarly"`.
+The `source` field is one of: `"arxiv"`, `"rss"`, `"crossref"`, `"scholarly"`, `"tracked_author"`.
+
+Papers from tracked authors also include `"tracked_author_name": "Firstname Lastname"`.
